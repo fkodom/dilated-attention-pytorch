@@ -34,7 +34,17 @@ setup(
     description="project_description",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    install_requires=[],
+    install_requires=[
+        # TODO: Check the full range of supported versions
+        "torch>=1.8.0",
+        "einops>=0.6.0",
+        # TODO: Resolve problems with installing newer versions of flash-attn.
+        # See this issue: https://github.com/HazyResearch/flash-attention/issues/246
+        # TODO: Add instructions to README.md about matching CUDA versions.  Flash
+        # attention builds CUDA extensions, so the CUDA version on your system must
+        # match the CUDA version that was used to build PyTorch.
+        "flash-attn==1.0.5",
+    ],
     extras_require=extras_require,
     classifiers=[
         "Programming Language :: Python :: 3",
