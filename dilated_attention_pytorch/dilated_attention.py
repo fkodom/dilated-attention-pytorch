@@ -1,9 +1,10 @@
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple, Union
 
 import torch
 from einops import rearrange
-from flash_attn.flash_attention import FlashAttention
 from torch import Tensor, nn
+
+import xformers.ops as xops
 
 
 class DilatedAttention(nn.Module):
@@ -19,171 +20,235 @@ class DilatedAttention(nn.Module):
 
     def __init__(
         self,
+        segment_lengths: Sequence[int],
         dilation_rates: Sequence[int],
-        sequence_lengths: Sequence[int],
         softmax_scale: Optional[float] = None,
         attention_dropout: float = 0.0,
+        op: Optional[xops.AttentionOp] = None,
     ):
         super().__init__()
+        self.segment_lengths = segment_lengths
         self.dilation_rates = dilation_rates
-        self.sequence_lengths = sequence_lengths
         self.softmax_scale = softmax_scale
         self.dropout_p = attention_dropout
-        self.attention = FlashAttention(
-            softmax_scale=softmax_scale, attention_dropout=attention_dropout
-        )
+        self.op = op
 
-    def forward(self, qkv: Tensor, causal: bool = False):
+    def forward(
+        self, query: Tensor, key: Tensor, value: Tensor, causal: bool = False
+    ) -> Tensor:
         # Notation:
         #   b - batch size
         #   n - sequence length
-        #   qkv - query, key, value
         #   h - number of heads
         #   d - embedding dimension
-        #   r - dilation rate
         #   s - segment length
+        #   r - dilation rate
         #
-        # Input shape of qkv: (b, n, 3, h, d)
-        b, n, _, h, d = qkv.shape
-        out = torch.zeros((b, n, h, d), dtype=qkv.dtype, device=qkv.device)
+        # Input shape of query, key, value: (b, n, h, d)
+        b, _, h, _ = query.shape
+        out = torch.zeros_like(query)
 
-        for r, s in zip(self.dilation_rates, self.sequence_lengths):
-            # Split the input sequences into segments of length 'self.segment_length'.
-            # Then, apply dilation along the segment dimension, and fold the segments
-            # into the batch dimension.
-            x = rearrange(qkv, "b (n s) qkv h d -> b n s qkv h d", s=s)
-            # Apply dilation
-            x = x[:, :, ::r, :, :]
-            # Fold segments into batch dimension
-            x = rearrange(x, "b n s qkv h d -> (b s) n qkv h d")
+        # TODO: Move the assertions to higher-level class, at initialization time.
+        assert len(self.segment_lengths) == len(self.dilation_rates)
+        num_groups = len(self.dilation_rates)
+        assert h % num_groups == 0
+        group_size = h // num_groups
+
+        for i, (r, s) in enumerate(zip(self.dilation_rates, self.segment_lengths)):
+            # Split the input sequences into segments of length 'self.segment_length'
+            q = rearrange(query, "b (n s) h d -> b n s h d", s=s)
+            k = rearrange(key, "b (n s) h d -> b n s h d", s=s)
+            v = rearrange(value, "b (n s) h d -> b n s h d", s=s)
+            # Apply dilation and segment offset
+            offset = i % r
+            hmin = i * group_size
+            hmax = (i + 1) * group_size
+            q = q[:, :, offset::r, hmin:hmax, :]
+            k = k[:, :, offset::r, hmin:hmax, :]
+            v = v[:, :, offset::r, hmin:hmax, :]
+            # Fold all 'n' segments into the batch dimension
+            q = rearrange(q, "b n s h d -> (b n) s h d")
+            k = rearrange(k, "b n s h d -> (b n) s h d")
+            v = rearrange(v, "b n s h d -> (b n) s h d")
+
             # Apply flash attention
-            x, _ = self.attention(x, causal=causal)  # shape: (b * s, n, h, d)
-            # Unfold segments back from the sequence dimension.
-            x = rearrange(x, "(b s) n h d -> b n s h d", b=b)
+            attn_bias = xops.LowerTriangularMask() if causal else None
+            x = xops.memory_efficient_attention(
+                query=q, key=k, value=v, op=self.op, attn_bias=attn_bias
+            )
+            # Unfold 'n' segments back out of the batch dimension.
+            x = rearrange(x, "(b n) s h d -> b n s h d", b=b)
 
-            # Sum the attention outputs from each dilation rate / segment length.
-            # NOTE: After dilation, 'x' has shape: (b, n // r, 3, h, d)
+            # Gather the attention outputs from each dilation rate / segment length.
             out = rearrange(out, "b (n s) h d -> b n s h d", s=s)
-            out[:, :, ::r, :, :] += x
+            out[:, :, offset::r, hmin:hmax, :] += x
             out = rearrange(out, "b n s h d -> b (n s) h d", s=s)
-            print(qkv.shape, out.shape)
 
         # Normalize attention outputs across the sequence length dimension.  This
         # is necessary because the attention outputs from each dilation rate /
         # segment length are summed together.
         # TODO: Double-check that we're summing over the correct dimension.
-        return out / out.sum(dim=1, keepdim=True), None
+        return out / out.sum(dim=1, keepdim=True)
 
 
-class DilatedMHA(nn.Module):
+class MultiheadDilatedAttention(nn.Module):
     def __init__(
         self,
         embed_dim: int,
         num_heads: int,
         dilation_rates: Sequence[int],
         segment_lengths: Sequence[int],
-        attention_dropout: float = 0.0,
-        causal: bool = False,
-        bias: bool = False,
+        dropout: float = 0.0,
+        bias: bool = True,
+        batch_first: bool = True,
+        device: Optional[Union[torch.device, str]] = None,
+        dtype: Optional[torch.dtype] = None,
+        op: Optional[xops.AttentionOp] = None,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dilation_rates = dilation_rates
         self.segment_lengths = segment_lengths
-        self.dropout = attention_dropout
-        self.causal = causal
+        self.dropout = dropout
         self.bias = bias
+        self.batch_first = batch_first
 
-        if not self.embed_dim % self.num_heads == 0:
+        if not batch_first:
+            raise ValueError("batch_first=False is not supported")
+        elif not self.embed_dim % self.num_heads == 0:
             raise ValueError(
                 f"embed_dim ({self.embed_dim}) must be divisible by "
                 f"num_heads ({self.num_heads})"
             )
-
+        num_dilations = len(dilation_rates)
+        num_segments = len(segment_lengths)
+        if num_dilations != num_segments:
+            raise ValueError(
+                f"len(dilation_rates) ({num_dilations}) must be equal to "
+                f"len(segment_lengths) ({num_segments})"
+            )
+        elif not num_heads % num_dilations == 0:
+            raise ValueError(
+                f"num_heads ({num_heads}) must be divisible by "
+                f"len(dilation_rates) ({num_dilations})"
+            )
         self.head_dim = self.embed_dim // num_heads
         if not self.head_dim % 8 == 0:
-            raise ValueError(f"embed_dim ({self.head_dim}) must be divisible by 8")
+            raise ValueError(
+                f"head_dim (embed_dim / num_heads = {self.head_dim}) must be "
+                "divisible by 8"
+            )
         if not self.head_dim <= 128:
-            raise ValueError(f"embed_dim ({self.head_dim}) must be <= 128")
+            raise ValueError(
+                f"head_dim (embed_dim / num_heads = {self.head_dim}) must be <= 128"
+            )
 
-        self.Wqkv = nn.Linear(embed_dim, 3 * embed_dim, bias=bias)
-        self.inner_attn = DilatedAttention(
-            dilation_rates=dilation_rates,
-            sequence_lengths=segment_lengths,
-            attention_dropout=attention_dropout,
+        self.w_q = nn.Linear(
+            embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
         )
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.w_k = nn.Linear(
+            embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
+        )
+        self.w_v = nn.Linear(
+            embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
+        )
+        self.attention = DilatedAttention(
+            segment_lengths=segment_lengths,
+            dilation_rates=dilation_rates,
+            attention_dropout=dropout,
+            op=op,
+        )
+        self.out_proj = nn.Linear(
+            embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
+        )
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    # TODO: Better initialization of weights and biases.
+    # NOTE: This is an example pulled from 'nn.MultiheadAttention'.
+    # def _reset_parameters(self):
+    #     if self._qkv_same_embed_dim:
+    #         xavier_uniform_(self.in_proj_weight)
+    #     else:
+    #         xavier_uniform_(self.q_proj_weight)
+    #         xavier_uniform_(self.k_proj_weight)
+    #         xavier_uniform_(self.v_proj_weight)
+
+    #     if self.in_proj_bias is not None:
+    #         constant_(self.in_proj_bias, 0.)
+    #         constant_(self.out_proj.bias, 0.)
+    #     if self.bias_k is not None:
+    #         xavier_normal_(self.bias_k)
+    #     if self.bias_v is not None:
+    #         xavier_normal_(self.bias_v)
+
+    def forward(
+        self, query: Tensor, key: Tensor, value: Tensor, is_causal: bool = False
+    ) -> Tuple[Tensor, None]:
         # Notation:
         #   b - batch size
         #   n - sequence length
-        #   qkv - query, key, value
         #   h - number of heads
         #   d - embedding dimension
         #
-        # Input shape of x: (b, n, d_model)
-        qkv = self.Wqkv(x)  # shape: (b, n, 3 * h * d)
-        qkv = rearrange(qkv, "b n (qkv h d) -> b n qkv h d", qkv=3, h=self.num_heads)
-        x, attn_weights = self.inner_attn(qkv, causal=self.causal)
+        # Input shape: (b, n, d)
+        q = self.w_q(query)
+        k = self.w_k(key)
+        v = self.w_v(value)
+
+        # Unfold 'd' dimension into 'h' separate attention heads.
+        q = rearrange(q, "b n (h d) -> b n h d", h=self.num_heads)
+        k = rearrange(k, "b n (h d) -> b n h d", h=self.num_heads)
+        v = rearrange(v, "b n (h d) -> b n h d", h=self.num_heads)
+        # Apply attention, then fold 'h' attention heads back into 'd'.
+        x = self.attention(q, k, v, causal=is_causal)
         x = rearrange(x, "b n h d -> b n (h d)")
-        return self.out_proj(x), attn_weights
 
+        # Linear projection on attention outputs.
+        x = self.out_proj(x)
 
-class DilatedTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    # TODO: Rewrite this to be independent of nn.TransformerEncoderLayer.
-    # Out of laziness, I quickly generated this class using Copilot, based on
-    # the source code of nn.TransformerEncoderLayer.  But it's inefficient, because
-    # it effectly allocates the self-attention and linear layers twice.  :(
-    #
-    # I'm tired and don't want to deal with it right now.  :P
-
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        dilation_rates: Sequence[int],
-        segment_lengths: Sequence[int],
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        activation: str = "relu",
-    ):
-        super().__init__(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=activation,
-        )
-        self.self_attn = DilatedMHA(  # type: ignore
-            embed_dim=d_model,
-            num_heads=nhead,
-            dilation_rates=dilation_rates,
-            segment_lengths=segment_lengths,
-            attention_dropout=dropout,
-            causal=False,
-            bias=True,
-        )
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
+        return x, None
 
 
 if __name__ == "__main__":
-    x = torch.randn(8, 128, 512, dtype=torch.float16, device="cuda")
-    mha = DilatedMHA(
-        embed_dim=512,
-        num_heads=8,
-        segment_lengths=[256, 512, 1024],
-        dilation_rates=[1, 2, 4],
-    ).to(dtype=torch.float16, device="cuda")
-    y, _ = mha(x)
+    torch.cuda.empty_cache()
 
-    print(x.shape, y.shape)
-    breakpoint()
-    pass
+    # x = torch.randn(4, 8192, 512, dtype=torch.float16, device="cuda")
+    # mha = nn.MultiheadAttention(
+    #     embed_dim=512,
+    #     num_heads=8,
+    #     device="cuda",
+    #     dtype=torch.float16,
+    #     batch_first=True,
+    # )
+    # mhda = MultiheadDilatedAttention(
+    #     embed_dim=512,
+    #     num_heads=8,
+    #     segment_lengths=[64, 128, 256, 512],
+    #     dilation_rates=[1, 2, 4, 8],
+    #     device="cuda",
+    #     dtype=torch.float16,
+    #     op=xops.MemoryEfficientAttentionFlashAttentionOp,
+    # )
+    # with torch.no_grad():
+    #     y1, _ = mha(x, x, x)
+    #     y2, _ = mhda(x, x, x)
+
+    x = torch.randn(8, 2**18, 8, 64, dtype=torch.float16, device="cuda")
+    dilated_attention = DilatedAttention(
+        segment_lengths=[64, 128, 256, 512],
+        dilation_rates=[1, 2, 4, 8],
+    )
+    attention = xops.memory_efficient_attention
+
+    with torch.no_grad():
+        y1 = attention(x, x, x)
+        y2 = dilated_attention(x, x, x)
+
+    # from torch.profiler import profile, record_function, ProfilerActivity
+    #
+    # with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
+    #     for _ in range(100):
+    #         with record_function("mhda"):
+    #             y1, _ = mhda(x, x, x)
+    #         # torch.cuda.synchronize()
+    # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
