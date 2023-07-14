@@ -61,15 +61,17 @@ class DilatedTransformerEncoderLayer(nn.Module):
         )
         self.linear2 = nn.Linear(dim_feedforward, d_model, device=device, dtype=dtype)
 
+        self._reset_parameters()
+
     def _reset_parameters(self):
         # NOTE: We follow the initialization strategy from MAGNETO.  See:
         # https://arxiv.org/pdf/2210.06423.pdf, Fig. 2
         # The 'MultiheadDilatedAttention' module uses ths same initialization,
         # so we just need to worry about the 'Linear' modules here.
         nn.init.xavier_normal_(self.linear1.weight, gain=self.gamma_init)
-        nn.init.xavier_normal_(self.linear1.bias, gain=self.gamma_init)
+        nn.init.constant_(self.linear1.bias, 0)
         nn.init.xavier_normal_(self.linear2.weight, gain=self.gamma_init)
-        nn.init.xavier_normal_(self.linear2.bias, gain=self.gamma_init)
+        nn.init.constant_(self.linear2.bias, 0)
 
     def forward(self, src: Tensor, is_causal: bool = False) -> Tensor:
         x = src
@@ -154,9 +156,11 @@ class DilatedTransformerDecoderLayer(nn.Module):
         )
         self.linear1 = nn.Linear(d_model, dim_feedforward, device=device, dtype=dtype)
         self.norm4 = nn.LayerNorm(
-            d_model, eps=layer_norm_eps, device=device, dtype=dtype
+            dim_feedforward, eps=layer_norm_eps, device=device, dtype=dtype
         )
         self.linear2 = nn.Linear(dim_feedforward, d_model, device=device, dtype=dtype)
+
+        self._reset_parameters()
 
     def _reset_parameters(self):
         # NOTE: We follow the initialization strategy from MAGNETO.  See:
@@ -164,9 +168,9 @@ class DilatedTransformerDecoderLayer(nn.Module):
         # The 'MultiheadDilatedAttention' module uses ths same initialization,
         # so we just need to worry about the 'Linear' modules here.
         nn.init.xavier_normal_(self.linear1.weight, gain=self.gamma_init)
-        nn.init.xavier_normal_(self.linear1.bias, gain=self.gamma_init)
+        nn.init.constant_(self.linear1.bias, 0)
         nn.init.xavier_normal_(self.linear2.weight, gain=self.gamma_init)
-        nn.init.xavier_normal_(self.linear2.bias, gain=self.gamma_init)
+        nn.init.constant_(self.linear2.bias, 0)
 
     def forward(
         self,
@@ -196,20 +200,3 @@ class DilatedTransformerDecoderLayer(nn.Module):
         x = self.dropout(x)
 
         return x
-
-
-if __name__ == "__main__":
-    x = torch.randn(8, 1024, 512, dtype=torch.float16, device="cuda")
-    layer = DilatedTransformerEncoderLayer(
-        d_model=512,
-        nhead=8,
-        segment_lengths=[128, 256, 512, 1024],
-        dilation_rates=[1, 2, 4, 8],
-        device="cuda",
-        dtype=torch.float16,
-    )
-    y = layer(x)
-
-    print(x.shape, y.shape)
-    breakpoint()
-    pass
