@@ -37,13 +37,10 @@ setup(
     install_requires=[
         # TODO: Check the full range of supported versions
         "torch>=1.8.0",
-        "einops>=0.6.0",
-        # TODO: Resolve problems with installing newer versions of flash-attn.
-        # See this issue: https://github.com/HazyResearch/flash-attention/issues/246
-        # TODO: Add instructions to README.md about matching CUDA versions.  Flash
-        # attention builds CUDA extensions, so the CUDA version on your system must
-        # match the CUDA version that was used to build PyTorch.
-        "flash-attn==1.0.5",
+        "einops~=0.6.0",
+        # TODO: Pin 'xformers' and 'torchscale' versions
+        "torchscale~=0.2.0",
+        "xformers>=0.20,<0.22",
     ],
     extras_require=extras_require,
     classifiers=[
