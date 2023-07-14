@@ -87,7 +87,9 @@ class DilatedAttention(nn.Module):
             k = rearrange(k, "b n s h d -> (b n) s h d")
             v = rearrange(v, "b n s h d -> (b n) s h d")
 
-            # Apply flash attention
+            # Apply memory efficient attention
+            # NOTE: If flash attention is correctly installed, then this will also
+            # automatically use the flash attention implementation.
             attn_bias = xops.LowerTriangularMask() if causal else None
             x = xops.memory_efficient_attention(
                 query=q, key=k, value=v, op=self.op, attn_bias=attn_bias
