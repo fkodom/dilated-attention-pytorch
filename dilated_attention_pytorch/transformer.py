@@ -23,6 +23,7 @@ class DilatedTransformerEncoderLayer(nn.Module):
         dropout: float = 0.1,
         activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
         layer_norm_eps: float = 1e-5,
+        gamma_init: float = 1.0,
         device: Optional[Union[torch.device, str]] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
@@ -32,6 +33,8 @@ class DilatedTransformerEncoderLayer(nn.Module):
             activation = _get_activation_fn(activation)
 
         self.activation = activation
+        self.gamma_init = gamma_init
+
         self.dropout = nn.Dropout(dropout)
         # Self-attention block
         self.norm1 = nn.LayerNorm(
@@ -44,6 +47,7 @@ class DilatedTransformerEncoderLayer(nn.Module):
             segment_lengths=segment_lengths,
             dropout=dropout,
             layer_norm_eps=layer_norm_eps,
+            gamma_init=gamma_init,
             device=device,
             dtype=dtype,
         )
@@ -56,6 +60,16 @@ class DilatedTransformerEncoderLayer(nn.Module):
             dim_feedforward, eps=layer_norm_eps, device=device, dtype=dtype
         )
         self.linear2 = nn.Linear(dim_feedforward, d_model, device=device, dtype=dtype)
+
+    def _reset_parameters(self):
+        # NOTE: We follow the initialization strategy from MAGNETO.  See:
+        # https://arxiv.org/pdf/2210.06423.pdf, Fig. 2
+        # The 'MultiheadDilatedAttention' module uses ths same initialization,
+        # so we just need to worry about the 'Linear' modules here.
+        nn.init.xavier_normal_(self.linear1.weight, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.linear1.bias, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.linear2.weight, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.linear2.bias, gain=self.gamma_init)
 
     def forward(self, src: Tensor, is_causal: bool = False) -> Tensor:
         x = src
@@ -91,6 +105,7 @@ class DilatedTransformerDecoderLayer(nn.Module):
         dropout: float = 0.1,
         activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
         layer_norm_eps: float = 1e-5,
+        gamma_init: float = 1.0,
         device: Optional[Union[torch.device, str]] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> None:
@@ -100,6 +115,8 @@ class DilatedTransformerDecoderLayer(nn.Module):
             activation = _get_activation_fn(activation)
 
         self.activation = activation
+        self.gamma_init = gamma_init
+
         self.dropout = nn.Dropout(dropout)
         # Self-attention block
         self.norm1 = nn.LayerNorm(
@@ -112,6 +129,7 @@ class DilatedTransformerDecoderLayer(nn.Module):
             segment_lengths=segment_lengths,
             dropout=dropout,
             layer_norm_eps=layer_norm_eps,
+            gamma_init=gamma_init,
             device=device,
             dtype=dtype,
         )
@@ -126,6 +144,7 @@ class DilatedTransformerDecoderLayer(nn.Module):
             segment_lengths=segment_lengths,
             dropout=dropout,
             layer_norm_eps=layer_norm_eps,
+            gamma_init=gamma_init,
             device=device,
             dtype=dtype,
         )
@@ -138,6 +157,16 @@ class DilatedTransformerDecoderLayer(nn.Module):
             d_model, eps=layer_norm_eps, device=device, dtype=dtype
         )
         self.linear2 = nn.Linear(dim_feedforward, d_model, device=device, dtype=dtype)
+
+    def _reset_parameters(self):
+        # NOTE: We follow the initialization strategy from MAGNETO.  See:
+        # https://arxiv.org/pdf/2210.06423.pdf, Fig. 2
+        # The 'MultiheadDilatedAttention' module uses ths same initialization,
+        # so we just need to worry about the 'Linear' modules here.
+        nn.init.xavier_normal_(self.linear1.weight, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.linear1.bias, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.linear2.weight, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.linear2.bias, gain=self.gamma_init)
 
     def forward(
         self,

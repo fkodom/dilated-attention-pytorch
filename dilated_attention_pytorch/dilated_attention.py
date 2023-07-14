@@ -103,14 +103,18 @@ class MultiheadDilatedAttention(nn.Module):
         segment_lengths: Sequence[int],
         dropout: float = 0.0,
         bias: bool = True,
-        # layer_norm: bool = True,
+        layer_norm: bool = True,
         layer_norm_eps: float = 1e-5,
+        gamma_init: float = 1.0,
         device: Optional[Union[torch.device, str]] = None,
         dtype: Optional[torch.dtype] = None,
         op: Optional[xops.AttentionOp] = None,
     ):
         super().__init__()
         self.num_heads = num_heads
+        self.layer_norm = layer_norm
+        self.gamma_init = gamma_init
+
         if not embed_dim % self.num_heads == 0:
             raise ValueError(
                 f"embed_dim ({embed_dim}) must be divisible by "
@@ -153,30 +157,35 @@ class MultiheadDilatedAttention(nn.Module):
             attention_dropout=dropout,
             op=op,
         )
-        self.norm = nn.LayerNorm(
-            embed_dim, eps=layer_norm_eps, device=device, dtype=dtype
-        )
+        self.norm: Optional[nn.LayerNorm] = None
+        if layer_norm:
+            self.norm = nn.LayerNorm(
+                embed_dim, eps=layer_norm_eps, device=device, dtype=dtype
+            )
         self.out_proj = nn.Linear(
             embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
         )
 
-    # TODO: Better initialization of weights and biases.
-    # NOTE: This is an example pulled from 'nn.MultiheadAttention'.
-    # def _reset_parameters(self):
-    #     if self._qkv_same_embed_dim:
-    #         xavier_uniform_(self.in_proj_weight)
-    #     else:
-    #         xavier_uniform_(self.q_proj_weight)
-    #         xavier_uniform_(self.k_proj_weight)
-    #         xavier_uniform_(self.v_proj_weight)
+    def _reset_parameters(self):
+        nn.init.xavier_normal_(self.q_proj.weight)
+        if self.q_proj.bias is not None:
+            nn.init.xavier_normal_(self.q_proj.bias)
+        nn.init.xavier_normal_(self.k_proj.weight)
+        if self.k_proj.bias is not None:
+            nn.init.xavier_normal_(self.k_proj.bias)
 
-    #     if self.in_proj_bias is not None:
-    #         constant_(self.in_proj_bias, 0.)
-    #         constant_(self.out_proj.bias, 0.)
-    #     if self.bias_k is not None:
-    #         xavier_normal_(self.bias_k)
-    #     if self.bias_v is not None:
-    #         xavier_normal_(self.bias_v)
+        # NOTE: We follow the initialization strategy from MAGNETO.  See:
+        # https://arxiv.org/pdf/2210.06423.pdf, Fig. 2
+        # Gain (self.gamma_init) should be provided as a keyword argument when
+        # initializing the larger Transformer model, since it requires knowledge
+        # of the number of encoder/decoder layers in the model.
+
+        nn.init.xavier_normal_(self.v_proj.weight, gain=self.gamma_init)
+        if self.v_proj.bias is not None:
+            nn.init.xavier_normal_(self.v_proj.bias, gain=self.gamma_init)
+        nn.init.xavier_normal_(self.out_proj.weight, gain=self.gamma_init)
+        if self.out_proj.bias is not None:
+            nn.init.xavier_normal_(self.out_proj.bias, gain=self.gamma_init)
 
     def forward(
         self, query: Tensor, key: Tensor, value: Tensor, is_causal: bool = False
@@ -202,8 +211,12 @@ class MultiheadDilatedAttention(nn.Module):
 
         # NOTE: This is different from 'nn.MultiheadAttention'! The LongNet paper
         # follows the MAGNETO architecture, which applies an extra layer norm
-        # before the linear output projection.
-        x = self.norm(x)
+        # before the linear output projection.  The cross-attention layer in the
+        # MAGNETO decoder does not include this layer norm, so users have the option
+        # to disable it (layer_norm=False).
+        if self.layer_norm:
+            assert self.norm is not None
+            x = self.norm(x)
         # Linear projection on attention outputs.
         x = self.out_proj(x)
 
