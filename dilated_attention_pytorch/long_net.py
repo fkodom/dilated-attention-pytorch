@@ -15,26 +15,6 @@ from dilated_attention_pytorch.transformer import (
 class LongNet(nn.Module):
     """These are the *base* LongNet hyperparameters taken from the paper.  See:
     https://arxiv.org/pdf/2307.02486.pdf, Section 4.1 & Appendix A
-
-    NOTE - Differences from the paper:
-    - 'segment_lengths' is [2048, 4096, 8192, 16384, 32768, 32768]
-                instead of [2048, 4096, 8192, 16384, 32768]
-    - 'dilation_rates' is [1, 2, 4, 6, 12, 12]
-               instead of [1, 2, 4, 6, 12]
-
-    Explanation:
-    - 'd_model' must be divisible by 'nheads', so that we can split the embedding
-      dimension evenly across heads. This is not uncommon for self-attention layers.
-    - My implementation of 'DilatedAttention' also requires that 'nheads' is divisible
-      by 'len(dilation_rates)', so that we can split the heads evenly across each
-      dilation rate.  NOTE: THIS IS NOT MENTIONED AS A REQUIREMENT IN THE PAPER.
-      I will continue looking into it.  :)
-    - I didn't want to use any sequence lengths less than 2048 or greater than 32768,
-      since those are the min/max used in the paper.  (Changing those would effectively
-      change the attention window size, which I do not want to do.)  The simplest
-      short-term solution was to add another (identical) segment length and dilation.
-      We have 2x more attention heads at segment_length=32768 than we do for any other
-      segment length, which means we spend more computation on long-range dependencies.
     """
 
     def __init__(
@@ -44,8 +24,8 @@ class LongNet(nn.Module):
         num_encoder_layers: int = 12,
         num_decoder_layers: int = 12,
         dim_feedforward: int = 3072,
-        segment_lengths: Sequence[int] = [2048, 4096, 8192, 16384, 32768, 32768],
-        dilation_rates: Sequence[int] = [1, 2, 4, 6, 12, 12],
+        segment_lengths: Sequence[int] = [2048, 4096, 8192, 16384, 32768],
+        dilation_rates: Sequence[int] = [1, 2, 4, 6, 12],
         dropout: float = 0.0,
         activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
         layer_norm_eps: float = 1e-5,
@@ -122,11 +102,6 @@ class LongNet(nn.Module):
 
 
 class LongNetLM(nn.Module):
-    """
-    NOTE: There are some hyperparameter differences from the original paper.
-    See 'LongNet' class for more details.
-    """
-
     def __init__(
         self,
         num_tokens: int,
@@ -135,8 +110,8 @@ class LongNetLM(nn.Module):
         num_encoder_layers: int = 12,
         num_decoder_layers: int = 12,
         dim_feedforward: int = 3072,
-        segment_lengths: Sequence[int] = [2048, 4096, 8192, 16384, 32768, 32768],
-        dilation_rates: Sequence[int] = [1, 2, 4, 6, 12, 12],
+        segment_lengths: Sequence[int] = [2048, 4096, 8192, 16384, 32768],
+        dilation_rates: Sequence[int] = [1, 2, 4, 6, 12],
         dropout: float = 0.0,
         activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
         layer_norm_eps: float = 1e-5,

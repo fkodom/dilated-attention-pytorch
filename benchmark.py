@@ -17,7 +17,7 @@ EMBED_DIM = 8
 # Vanilla attention only
 VANILLA_SEQ_LENGTHS = [2**i for i in range(13, 18)]  # 8k - 128k
 # Dilated attention only
-SEGMENT_LENGTHS = [8192, 16384, 32768, 65536]  # 8k - 64k
+SEGMENT_LENGTHS = [8192, 16384, 32768]  # 8k - 64k
 DILATED_SEQ_LENGTHS = [2**i for i in range(13, 26)]  # 8k - 32M
 
 

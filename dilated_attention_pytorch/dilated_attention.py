@@ -43,26 +43,42 @@ class DilatedAttention(nn.Module):
         #   d - embedding dimension
         #   s - segment length
         #   r - dilation rate
+        #   g - group size (i.e. number of heads per segment length)
         #
         # Input shape of query, key, value: (b, n, h, d)
         b, _, h, _ = query.shape
         out = torch.zeros_like(query)
 
-        # TODO: Move the assertions to higher-level class, at initialization time.
-        assert len(self.segment_lengths) == len(self.dilation_rates)
+        # *** NOTE ***
+        # The original paper does not describe how to handle the case where
+        #   h % len(self.segment_lengths) != 0
+        #
+        # In my first implementation, I naively assumed (and asserted) that
+        # 'h % len(self.segment_lengths) == 0', so that I could evenly distribute
+        # the heads between the different segment lengths. However, it was not
+        # possible to reproduce the LongNet hyperparameters with that restriction:
+        #   h=12, segment_lengths=[2048, 4096, 8192, 16384, 32768]
+        #   h % len(segment_lengths) == 2
+        #
+        # For that reason, I have removed the assertion, and instead grouped the heads
+        # into (potentially) unequally sized groups.  If not perfectly divisible, then
+        # the first few groups will have an extraattention head.
         num_groups = len(self.dilation_rates)
-        assert h % num_groups == 0
-        group_size = h // num_groups
+        group_sizes = [h // num_groups] * num_groups
+        for i in range(h % num_groups):
+            group_sizes[i] += 1
 
-        for i, (r, s) in enumerate(zip(self.dilation_rates, self.segment_lengths)):
+        for i, (g, r, s) in enumerate(
+            zip(group_sizes, self.dilation_rates, self.segment_lengths)
+        ):
             # Split the input sequences into segments of length 'self.segment_length'
             q = rearrange(query, "b (n s) h d -> b n s h d", s=s)
             k = rearrange(key, "b (n s) h d -> b n s h d", s=s)
             v = rearrange(value, "b (n s) h d -> b n s h d", s=s)
             # Apply dilation and segment offset
             offset = i % r
-            hmin = i * group_size
-            hmax = (i + 1) * group_size
+            hmin = i * g
+            hmax = (i + 1) * g
             q = q[:, :, offset::r, hmin:hmax, :]
             k = k[:, :, offset::r, hmin:hmax, :]
             v = v[:, :, offset::r, hmin:hmax, :]
@@ -126,11 +142,6 @@ class MultiheadDilatedAttention(nn.Module):
             raise ValueError(
                 f"len(dilation_rates) ({num_dilations}) must be equal to "
                 f"len(segment_lengths) ({num_segments})"
-            )
-        elif not num_heads % num_dilations == 0:
-            raise ValueError(
-                f"num_heads ({num_heads}) must be divisible by "
-                f"len(dilation_rates) ({num_dilations})"
             )
         head_dim = embed_dim // num_heads
         if not head_dim % 8 == 0:
