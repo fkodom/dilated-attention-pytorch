@@ -78,17 +78,20 @@ class DilatedAttention(nn.Module):
             )
             # Unfold 'n' segments back out of the batch dimension.
             x = rearrange(x, "(b n) s h d -> b n s h d", b=b)
+            # Normalize attention outputs across the sequence length dimension. This
+            # is necessary because the attention outputs from each dilation rate /
+            # segment length are summed together.
+            x /= x.sum(dim=(1, 2), keepdim=True)
 
             # Gather the attention outputs from each dilation rate / segment length.
             out = rearrange(out, "b (n s) h d -> b n s h d", s=s)
             out[:, :, offset::r, hmin:hmax, :] += x
             out = rearrange(out, "b n s h d -> b (n s) h d", s=s)
 
-        # Normalize attention outputs across the sequence length dimension.  This
-        # is necessary because the attention outputs from each dilation rate /
-        # segment length are summed together.
-        # TODO: Double-check that we're summing over the correct dimension.
-        return out / out.sum(dim=1, keepdim=True)
+        # We have already normalized each attention output across the sequence length.
+        # Now, normalize across all attention outputs by dividing by the number of
+        # attention groups.  See: https://arxiv.org/pdf/2307.02486.pdf, Eq. 10
+        return out / num_groups
 
 
 class MultiheadDilatedAttention(nn.Module):
@@ -100,26 +103,18 @@ class MultiheadDilatedAttention(nn.Module):
         segment_lengths: Sequence[int],
         dropout: float = 0.0,
         bias: bool = True,
-        batch_first: bool = True,
+        # layer_norm: bool = True,
+        layer_norm_eps: float = 1e-5,
         device: Optional[Union[torch.device, str]] = None,
         dtype: Optional[torch.dtype] = None,
         op: Optional[xops.AttentionOp] = None,
     ):
         super().__init__()
-        self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.dilation_rates = dilation_rates
-        self.segment_lengths = segment_lengths
-        self.dropout = dropout
-        self.bias = bias
-        self.batch_first = batch_first
-
-        if not batch_first:
-            raise ValueError("batch_first=False is not supported")
-        elif not self.embed_dim % self.num_heads == 0:
+        if not embed_dim % self.num_heads == 0:
             raise ValueError(
-                f"embed_dim ({self.embed_dim}) must be divisible by "
-                f"num_heads ({self.num_heads})"
+                f"embed_dim ({embed_dim}) must be divisible by "
+                f"num_heads ({num_heads})"
             )
         num_dilations = len(dilation_rates)
         num_segments = len(segment_lengths)
@@ -133,24 +128,23 @@ class MultiheadDilatedAttention(nn.Module):
                 f"num_heads ({num_heads}) must be divisible by "
                 f"len(dilation_rates) ({num_dilations})"
             )
-        self.head_dim = self.embed_dim // num_heads
-        if not self.head_dim % 8 == 0:
+        head_dim = embed_dim // num_heads
+        if not head_dim % 8 == 0:
             raise ValueError(
-                f"head_dim (embed_dim / num_heads = {self.head_dim}) must be "
-                "divisible by 8"
+                f"head_dim (embed_dim / num_heads = {head_dim}) must be divisible by 8"
             )
-        if not self.head_dim <= 128:
+        if not head_dim <= 128:
             raise ValueError(
-                f"head_dim (embed_dim / num_heads = {self.head_dim}) must be <= 128"
+                f"head_dim (embed_dim / num_heads = {head_dim}) must be <= 128"
             )
 
-        self.w_q = nn.Linear(
+        self.q_proj = nn.Linear(
             embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
         )
-        self.w_k = nn.Linear(
+        self.k_proj = nn.Linear(
             embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
         )
-        self.w_v = nn.Linear(
+        self.v_proj = nn.Linear(
             embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
         )
         self.attention = DilatedAttention(
@@ -158,6 +152,9 @@ class MultiheadDilatedAttention(nn.Module):
             dilation_rates=dilation_rates,
             attention_dropout=dropout,
             op=op,
+        )
+        self.norm = nn.LayerNorm(
+            embed_dim, eps=layer_norm_eps, device=device, dtype=dtype
         )
         self.out_proj = nn.Linear(
             embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
@@ -191,9 +188,9 @@ class MultiheadDilatedAttention(nn.Module):
         #   d - embedding dimension
         #
         # Input shape: (b, n, d)
-        q = self.w_q(query)
-        k = self.w_k(key)
-        v = self.w_v(value)
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
 
         # Unfold 'd' dimension into 'h' separate attention heads.
         q = rearrange(q, "b n (h d) -> b n h d", h=self.num_heads)
@@ -203,52 +200,11 @@ class MultiheadDilatedAttention(nn.Module):
         x = self.attention(q, k, v, causal=is_causal)
         x = rearrange(x, "b n h d -> b n (h d)")
 
+        # NOTE: This is different from 'nn.MultiheadAttention'! The LongNet paper
+        # follows the MAGNETO architecture, which applies an extra layer norm
+        # before the linear output projection.
+        x = self.norm(x)
         # Linear projection on attention outputs.
         x = self.out_proj(x)
 
         return x, None
-
-
-if __name__ == "__main__":
-    torch.cuda.empty_cache()
-
-    # x = torch.randn(4, 8192, 512, dtype=torch.float16, device="cuda")
-    # mha = nn.MultiheadAttention(
-    #     embed_dim=512,
-    #     num_heads=8,
-    #     device="cuda",
-    #     dtype=torch.float16,
-    #     batch_first=True,
-    # )
-    # mhda = MultiheadDilatedAttention(
-    #     embed_dim=512,
-    #     num_heads=8,
-    #     segment_lengths=[64, 128, 256, 512],
-    #     dilation_rates=[1, 2, 4, 8],
-    #     device="cuda",
-    #     dtype=torch.float16,
-    #     op=xops.MemoryEfficientAttentionFlashAttentionOp,
-    # )
-    # with torch.no_grad():
-    #     y1, _ = mha(x, x, x)
-    #     y2, _ = mhda(x, x, x)
-
-    x = torch.randn(8, 2**18, 8, 64, dtype=torch.float16, device="cuda")
-    dilated_attention = DilatedAttention(
-        segment_lengths=[64, 128, 256, 512],
-        dilation_rates=[1, 2, 4, 8],
-    )
-    attention = xops.memory_efficient_attention
-
-    with torch.no_grad():
-        y1 = attention(x, x, x)
-        y2 = dilated_attention(x, x, x)
-
-    # from torch.profiler import profile, record_function, ProfilerActivity
-    #
-    # with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
-    #     for _ in range(100):
-    #         with record_function("mhda"):
-    #             y1, _ = mhda(x, x, x)
-    #         # torch.cuda.synchronize()
-    # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))

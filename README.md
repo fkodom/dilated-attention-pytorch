@@ -2,6 +2,8 @@
 
 ## Install
 
+[**NOTE**: Install `xformers` according to their instructions.]
+
 ```bash
 pip install "dilated-attention-pytorch @ git+ssh://git@github.com/fkodom/dilated-attention-pytorch.git"
 
