@@ -27,6 +27,11 @@ class DilatedAttention(nn.Module):
         op: Optional[xops.AttentionOp] = None,
     ):
         super().__init__()
+        if len(segment_lengths) != len(dilation_rates):
+            raise ValueError(
+                "segment_lengths and dilation_rates must have the same length"
+            )
+
         self.segment_lengths = segment_lengths
         self.dilation_rates = dilation_rates
         self.softmax_scale = softmax_scale
@@ -34,7 +39,7 @@ class DilatedAttention(nn.Module):
         self.op = op
 
     def forward(
-        self, query: Tensor, key: Tensor, value: Tensor, causal: bool = False
+        self, query: Tensor, key: Tensor, value: Tensor, is_causal: bool = False
     ) -> Tensor:
         # Notation:
         #   b - batch size
@@ -90,7 +95,7 @@ class DilatedAttention(nn.Module):
             # Apply memory efficient attention
             # NOTE: If flash attention is correctly installed, then this will also
             # automatically use the flash attention implementation.
-            attn_bias = xops.LowerTriangularMask() if causal else None
+            attn_bias = xops.LowerTriangularMask() if is_causal else None
             x = xops.memory_efficient_attention(
                 query=q, key=k, value=v, op=self.op, attn_bias=attn_bias
             )
@@ -179,6 +184,8 @@ class MultiheadDilatedAttention(nn.Module):
             embed_dim, embed_dim, bias=bias, device=device, dtype=dtype
         )
 
+        self._reset_parameters()
+
     def _reset_parameters(self):
         nn.init.xavier_normal_(self.q_proj.weight)
         if self.q_proj.bias is not None:
@@ -219,7 +226,7 @@ class MultiheadDilatedAttention(nn.Module):
         k = rearrange(k, "b n (h d) -> b n h d", h=self.num_heads)
         v = rearrange(v, "b n (h d) -> b n h d", h=self.num_heads)
         # Apply attention, then fold 'h' attention heads back into 'd'.
-        x = self.attention(q, k, v, causal=is_causal)
+        x = self.attention(q, k, v, is_causal=is_causal)
         x = rearrange(x, "b n h d -> b n (h d)")
 
         # NOTE: This is different from 'nn.MultiheadAttention'! The LongNet paper
