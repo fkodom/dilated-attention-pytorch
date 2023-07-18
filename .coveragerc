@@ -1,5 +1,5 @@
 [run]
-source = dilated-attention-pytorch
+source = dilated_attention_pytorch
 
 [report]
 exclude_lines =

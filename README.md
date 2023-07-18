@@ -58,7 +58,7 @@ query = torch.randn(1, 8192, 8, 64, device="cuda", dtype=torch.float16)
 key = torch.randn(1, 8192, 8, 64, device="cuda", dtype=torch.float16)
 value = torch.randn(1, 8192, 8, 64, device="cuda", dtype=torch.float16)
 
-out = dilated_attention(query, key, value, causal=False)  # default: causal=False
+out = dilated_attention(query, key, value, is_causal=False)  # default: causal=False
 print(out.shape)
 # torch.Size([1, 8192, 8, 64])
 ```
