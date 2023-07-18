@@ -1,10 +1,9 @@
 from typing import Optional, Sequence, Tuple, Union
 
 import torch
+import xformers.ops as xops
 from einops import rearrange
 from torch import Tensor, nn
-
-import xformers.ops as xops
 
 
 class DilatedAttention(nn.Module):
