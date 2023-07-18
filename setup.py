@@ -40,12 +40,12 @@ setup(
         "einops~=0.6.0",
         # TODO: Pin 'xformers' and 'torchscale' versions
         "torchscale~=0.2.0",
-        "xformers>=0.20,<0.22",
+        "xformers>=0.0.20,<0.0.22",
     ],
     extras_require=extras_require,
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.7",
+    python_requires=">=3.8",
 )
