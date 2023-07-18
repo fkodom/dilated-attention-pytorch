@@ -5,8 +5,8 @@ from timeit import Timer
 from typing import Callable, List, NamedTuple
 
 import torch
-
 import xformers.ops as xops
+
 from dilated_attention_pytorch.dilated_attention import DilatedAttention
 
 # Generic benchmarking parameters

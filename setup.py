@@ -38,7 +38,6 @@ setup(
         # TODO: Check the full range of supported versions
         "torch>=1.8.0",
         "einops~=0.6.0",
-        # TODO: Pin 'xformers' and 'torchscale' versions
         "torchscale~=0.2.0",
         "xformers>=0.0.20,<0.0.22",
     ],
