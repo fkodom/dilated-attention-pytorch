@@ -1,9 +1,11 @@
 import logging
+import os
 from functools import partial
 from math import ceil
 from timeit import Timer
 from typing import Callable, List, NamedTuple
 
+import plotly.graph_objects as go
 import torch
 import xformers.ops as xops
 
@@ -140,3 +142,38 @@ if __name__ == "__main__":
         result = benchmark(fn, x)
         dilated_results.append(result)
         logging.info(f"Sequence length {seq_length}: {result}")
+
+    logging.info("Plotting results...")
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=VANILLA_SEQ_LENGTHS,
+            y=[r.mean for r in vanilla_results],
+            error_y=dict(
+                type="data",
+                array=[r.std for r in vanilla_results],
+                visible=True,
+            ),
+            name="Vanilla Attention",
+        ),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=DILATED_SEQ_LENGTHS,
+            y=[r.mean for r in dilated_results],
+            error_y=dict(
+                type="data",
+                array=[r.std for r in dilated_results],
+                visible=True,
+            ),
+            name="Dilated Attention",
+        ),
+    )
+    fig.update_layout(
+        title="Attention Benchmark (Total Tokens = 32M)",
+        xaxis_title="Sequence Length",
+        yaxis_title="Runtime (s)",
+        xaxis_type="log",
+        yaxis_type="log",
+    )
+    fig.write_image(os.path.join("doc", "benchmark.png"))

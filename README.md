@@ -29,6 +29,17 @@ pre-commit install
 ```
 
 
+## Benchmark
+
+I follow the benchmarking procedure from the [LongNet paper](https://arxiv.org/abs/2307.02486) (Section 3.1) as best I can.  They tested in a distributed, multi-GPU setting (and by my estimation, with much better GPUs), and I test on a single GTX 2080 Ti, but the same general scaling trends still apply.  Rather than 1B tokens, I scale the batch size so that the total number of tokens is 32M, which is the largest sequence that fits in memory on my GPU when running dilated attention.
+
+See: [benchmark.py](./benchmark.py)
+
+![benchmark](./doc/benchmark.png)
+
+> **NOTE**: Clearly, there are some inefficiencies in my `DilatedAttention` implementation for shorter sequence lengths.  I'm not sure what's causing this.  If you have any insights, please let me know!
+
+
 ## Usage
 
 ### `DilatedAttention`
