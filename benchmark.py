@@ -84,8 +84,8 @@ def get_dilated_attention_for_seq_length(seq_length: int) -> DilatedAttention:
     Reference:
         https://arxiv.org/pdf/2307.02486.pdf, Section 3.1
     """
-    segment_lengths: list[int] = []
-    dilation_rates: list[int] = []
+    segment_lengths: List[int] = []
+    dilation_rates: List[int] = []
 
     for segment_length in SEGMENT_LENGTHS:
         # We can't use segment lengths larger than the sequence length.
@@ -113,7 +113,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     logging.info("Benchmark vanilla attention...")
-    vanilla_results: list[BenchmarkResult] = []
+    vanilla_results: List[BenchmarkResult] = []
     for seq_length in VANILLA_SEQ_LENGTHS:
         torch.cuda.empty_cache()
         batch_size = TOTAL_TOKENS // seq_length
@@ -128,7 +128,7 @@ if __name__ == "__main__":
         logging.info(f"Sequence length {seq_length}: {result}")
 
     logging.info("Benchmark dilated attention...")
-    dilated_results: list[BenchmarkResult] = []
+    dilated_results: List[BenchmarkResult] = []
     for seq_length in DILATED_SEQ_LENGTHS:
         torch.cuda.empty_cache()
         batch_size = TOTAL_TOKENS // seq_length
