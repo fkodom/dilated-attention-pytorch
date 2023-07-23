@@ -9,8 +9,6 @@
 
 PyPI:
 
-> TODO: Publish to PyPI
-
 ```bash
 pip install dilated-attention-pytorch
 ```
