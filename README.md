@@ -170,3 +170,16 @@ with torch.no_grad():
 print(y.shape)
 # torch.Size([1, 32768, num_tokens])
 ```
+
+## Citations
+
+```bibtex
+@misc{ding2023longnet,
+      title={LongNet: Scaling Transformers to 1,000,000,000 Tokens}, 
+      author={Jiayu Ding and Shuming Ma and Li Dong and Xingxing Zhang and Shaohan Huang and Wenhui Wang and Nanning Zheng and Furu Wei},
+      year={2023},
+      eprint={2307.02486},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+}
+```

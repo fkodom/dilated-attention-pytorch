@@ -28,7 +28,7 @@ extras_require = {
         "plotly",
         "pytest",
         "pytest-cov",
-    ]
+    ],
 }
 extras_require["dev"] = ["pre-commit", *extras_require["test"]]
 all_require = [r for reqs in extras_require.values() for r in reqs]
